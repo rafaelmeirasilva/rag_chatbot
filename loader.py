@@ -33,8 +33,9 @@ def load_file(file_path):
         return UnstructuredFileLoader(file_path).load()
 
 def process_documents(uploaded_files, target_folder=""):
-    target_path = os.path.join(UPLOAD_DIRECTORY, target_folder)
-    os.makedirs(target_path, exist_ok=True)
+    target_path = os.path.join(UPLOAD_DIRECTORY, target_folder) if target_folder else UPLOAD_DIRECTORY
+    if not os.path.isdir(target_path):
+        os.makedirs(target_path, exist_ok=True)
     for uploaded_file in uploaded_files:
         file_path = os.path.join(target_path, uploaded_file.name)
         with open(file_path, "wb") as f:

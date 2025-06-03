@@ -1,9 +1,10 @@
 import sqlite3
 import os
 import streamlit as st
+import shutil
 from decouple import config
 from db import create_history_table, create_tag_table, load_chat_history, save_chat_to_db, delete_all_history, get_tags_for_file, save_tags_for_file, get_all_tags
-from loader import process_documents, get_available_files, delete_files
+from loader import process_documents, get_available_files, delete_files, UPLOAD_DIRECTORY
 from chat import initialize_chain, get_response, render_sources
 from ui import render_sidebar, render_chat_history
 
@@ -17,7 +18,7 @@ create_tag_table()
 uploaded_files, selected_files, selected_model, selected_folder = render_sidebar()
 
 # Navegação
-page = st.sidebar.radio("📌 Navegação", ["Chat", "Dashboard", "Classificações"])
+page = st.sidebar.radio("📌 Navegação", ["Chat", "Dashboard", "Classificações", "Pastas"])
 
 # Opção para ignorar o histórico apenas na próxima pergunta
 ignore_history = st.sidebar.checkbox("🔁 Ignorar histórico nesta pergunta", value=False)
@@ -126,3 +127,64 @@ elif page == "Classificações":
                             st.warning("Não foi possível exibir este arquivo.")
             else:
                 st.caption("Nenhum arquivo correspondente encontrado.")
+
+elif page == "Pastas":
+    st.title("📂 Gerenciador de Pastas")
+
+    folders = os.listdir(UPLOAD_DIRECTORY)
+    folders = [f for f in folders if os.path.isdir(os.path.join(UPLOAD_DIRECTORY, f))]
+    selected_folder = st.selectbox("📁 Selecione uma pasta para gerenciar", folders + ["[Criar nova pasta]"])
+
+    if selected_folder == "[Criar nova pasta]":
+        new_folder = st.text_input("🔧 Nome da nova pasta")
+        if new_folder and st.button("➕ Criar pasta"):
+            os.makedirs(os.path.join(UPLOAD_DIRECTORY, new_folder), exist_ok=True)
+            st.success(f"Pasta '{new_folder}' criada com sucesso!")
+            st.rerun()
+
+    elif selected_folder:
+        folder_path = os.path.join(UPLOAD_DIRECTORY, selected_folder)
+        st.subheader(f"📁 Pasta: `{selected_folder}`")
+
+        # Renomear pasta
+        new_name = st.text_input("✏️ Renomear pasta", value=selected_folder, key="rename_input")
+        if new_name and new_name != selected_folder and st.button("🔄 Renomear"):
+            os.rename(folder_path, os.path.join(UPLOAD_DIRECTORY, new_name))
+            st.success("Pasta renomeada com sucesso!")
+            st.rerun()
+
+        # Listar arquivos da pasta
+        files = os.listdir(folder_path)
+        st.markdown("### 📄 Arquivos:")
+        for file in files:
+            file_path = os.path.join(folder_path, file)
+            with st.expander(f"📄 {file}"):
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                        st.text_area("Conteúdo", content[:2000], height=200)
+                except:
+                    st.caption("Não foi possível visualizar o conteúdo.")
+
+        # Mover arquivos
+        if files:
+            file_to_move = st.selectbox("📦 Escolha um arquivo para mover", files)
+            target_folder = st.selectbox("📍 Mover para:", [f for f in folders if f != selected_folder])
+            if st.button("🚚 Mover arquivo"):
+                os.rename(
+                    os.path.join(folder_path, file_to_move),
+                    os.path.join(UPLOAD_DIRECTORY, target_folder, file_to_move)
+                )
+                st.success(f"{file_to_move} movido para {target_folder}!")
+                st.rerun()
+
+        # Excluir pasta
+        if st.checkbox("⚠️ Deseja excluir esta pasta?"):
+            delete_contents = st.checkbox("🗑️ Apagar todos os arquivos também?")
+            if st.button("❌ Excluir pasta"):
+                if delete_contents:
+                    shutil.rmtree(folder_path)
+                else:
+                    os.rmdir(folder_path)
+                st.success("Pasta excluída com sucesso!")
+                st.rerun()

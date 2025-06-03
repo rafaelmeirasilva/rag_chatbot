@@ -7,7 +7,7 @@ def render_sidebar():
     with st.sidebar:
         st.header("Upload de arquivos 📄")
         # Pasta destino
-        folders = os.listdir(UPLOAD_DIRECTORY)
+        folders = [f for f in os.listdir(UPLOAD_DIRECTORY) if os.path.isdir(os.path.join(UPLOAD_DIRECTORY, f))]
         selected_folder = st.selectbox("📂 Selecionar pasta destino", folders + ["Nova pasta..."])
         if selected_folder == "Nova pasta...":
             new_folder = st.text_input("Nome da nova pasta")
