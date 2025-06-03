@@ -1,3 +1,4 @@
+import sqlite3
 import os
 import streamlit as st
 from decouple import config
@@ -16,7 +17,7 @@ create_tag_table()
 uploaded_files, selected_files, selected_model = render_sidebar()
 
 # Navegação
-page = st.sidebar.radio("📌 Navegação", ["Chat", "Dashboard"])
+page = st.sidebar.radio("📌 Navegação", ["Chat", "Dashboard", "Classificações"])
 
 # Opção para ignorar o histórico apenas na próxima pergunta
 ignore_history = st.sidebar.checkbox("🔁 Ignorar histórico nesta pergunta", value=False)
@@ -88,3 +89,35 @@ elif page == "Dashboard":
                     save_tags_for_file(file, selected_tags)
                     st.success("Classificação salva com sucesso!")
                     st.rerun()
+
+elif page == "Classificações":
+    st.title("🏷️ Classificações (Tags)")
+
+    all_tags = get_all_tags()
+    if not all_tags:
+        st.info("Nenhuma classificação encontrada ainda.")
+    else:
+        for tag in all_tags:
+            st.subheader(f"🔖 Tag: `{tag}`")
+
+            conn = sqlite3.connect("chat_history.sqlite3")
+            c = conn.cursor()
+            c.execute("SELECT file_name, tags FROM document_tags")
+            rows = c.fetchall()
+            conn.close()
+
+            files = [file for file, tag_str in rows if tag in [t.strip() for t in tag_str.split(",")]]
+
+            if files:
+                for file in files:
+                    with st.expander(f"📄 {file}"):
+                        st.markdown(f"**Nome:** `{file}`")
+                        path = os.path.join("uploaded_files", file)
+                        try:
+                            with open(path, "r", encoding="utf-8") as f:
+                                content = f.read()
+                                st.text_area("Conteúdo", content[:2000], height=200)
+                        except:
+                            st.warning("Não foi possível exibir este arquivo.")
+            else:
+                st.caption("Nenhum arquivo correspondente encontrado.")
