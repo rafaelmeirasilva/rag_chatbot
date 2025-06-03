@@ -32,19 +32,29 @@ def load_file(file_path):
     except Exception as e:
         return UnstructuredFileLoader(file_path).load()
 
-def process_documents(uploaded_files):
+def process_documents(uploaded_files, target_folder=""):
+    target_path = os.path.join(UPLOAD_DIRECTORY, target_folder)
+    os.makedirs(target_path, exist_ok=True)
     for uploaded_file in uploaded_files:
-        file_path = os.path.join(UPLOAD_DIRECTORY, uploaded_file.name)
+        file_path = os.path.join(target_path, uploaded_file.name)
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
     st.success("Arquivos enviados com sucesso!")
 
 def delete_files(files):
-    for f in files:
-        os.remove(os.path.join(UPLOAD_DIRECTORY, f))
+    for rel_path in files:
+        path = os.path.join(UPLOAD_DIRECTORY, rel_path)
+        if os.path.exists(path):
+            os.remove(path)
 
 def get_available_files():
-    return os.listdir(UPLOAD_DIRECTORY)
+    files = []
+    for root, _, filenames in os.walk(UPLOAD_DIRECTORY):
+        for filename in filenames:
+            rel_path = os.path.relpath(os.path.join(root, filename), UPLOAD_DIRECTORY)
+            files.append(rel_path.replace("\\", "/"))  # Windows fix
+    return files
+
 
 def get_vectorstore(selected_files):
     all_chunks = []

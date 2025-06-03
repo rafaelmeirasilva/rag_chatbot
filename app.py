@@ -14,7 +14,7 @@ create_history_table()
 create_tag_table()
 
 # Sidebar
-uploaded_files, selected_files, selected_model = render_sidebar()
+uploaded_files, selected_files, selected_model, selected_folder = render_sidebar()
 
 # Navegação
 page = st.sidebar.radio("📌 Navegação", ["Chat", "Dashboard", "Classificações"])
@@ -25,7 +25,7 @@ ignore_history = st.sidebar.checkbox("🔁 Ignorar histórico nesta pergunta", v
 if page == "Chat":
     # Processamento de arquivos
     if uploaded_files:
-        process_documents(uploaded_files)
+        process_documents(uploaded_files, selected_folder)
         st.rerun()
     
     st.title("🤖 Chat com documentos (RAG)")
@@ -55,12 +55,17 @@ elif page == "Dashboard":
     st.title("📊 Dashboard de Documentos")
 
     files = get_available_files()
+
+    folders = sorted(set([f.split("/")[0] for f in files]))
+    folder_filter = st.selectbox("📁 Filtrar por pasta", ["Todas"] + folders)
+    filtered_files = [f for f in files if folder_filter == "Todas" or f.startswith(folder_filter + "/")]
+
     st.subheader("📁 Documentos carregados")
 
     if not files:
         st.info("Nenhum documento foi carregado ainda.")
     else:
-        for file in files:
+        for file in filtered_files:
             with st.expander(f"📄 {file}"):
                 st.markdown(f"**Nome:** `{file}`")
                 existing_tags = get_tags_for_file(file)
