@@ -1,7 +1,8 @@
 import sqlite3
 import os
-import streamlit as st
+import pandas as pd
 import shutil
+import streamlit as st
 from decouple import config
 from db import create_history_table, create_tag_table, load_chat_history, save_chat_to_db, delete_all_history, get_tags_for_file, save_tags_for_file, get_all_tags, create_notes_table, save_document_note, get_document_note
 from loader import process_documents, get_available_files, delete_files, UPLOAD_DIRECTORY
@@ -19,7 +20,7 @@ create_notes_table()
 uploaded_files, selected_files, selected_model, selected_folder = render_sidebar()
 
 # Navegação
-page = st.sidebar.radio("📌 Navegação", ["Chat", "Dashboard", "Classificações", "Pastas"])
+page = st.sidebar.radio("📌 Navegação", ["Chat", "Dashboard", "Classificações", "Pastas", "Analytics"])
 
 # Opção para ignorar o histórico apenas na próxima pergunta
 ignore_history = st.sidebar.checkbox("🔁 Ignorar histórico nesta pergunta", value=False)
@@ -70,7 +71,7 @@ elif page == "Dashboard":
         for file in filtered_files:
             with st.expander(f"📄 {file}"):
                 note, favorite = get_document_note(file)
-                
+
                 # Favorito
                 is_fav = st.checkbox("⭐ Marcar como favorito", value=bool(favorite), key=f"fav_{file}")
 
@@ -201,3 +202,39 @@ elif page == "Pastas":
                     os.rmdir(folder_path)
                 st.success("Pasta excluída com sucesso!")
                 st.rerun()
+
+elif page == "Analytics":
+    st.title("📊 Analytics do Sistema")
+
+    # Número total de documentos
+    files = get_available_files()
+    st.metric("📁 Total de documentos", len(files))
+
+    # Tags mais usadas
+    tag_counts = {}
+    conn = sqlite3.connect("chat_history.sqlite3")
+    c = conn.cursor()
+    c.execute("SELECT tags FROM document_tags")
+    rows = c.fetchall()
+    for row in rows:
+        if row[0]:
+            for tag in row[0].split(","):
+                tag = tag.strip()
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    conn.close()
+
+    if tag_counts:
+        st.subheader("🏷️ Tags mais usadas")
+        df_tags = pd.DataFrame(tag_counts.items(), columns=["Tag", "Quantidade"]).sort_values(by="Quantidade", ascending=False)
+        st.bar_chart(df_tags.set_index("Tag"))
+    else:
+        st.info("Nenhuma tag registrada ainda.")
+
+    # Uso por modelo
+    c = sqlite3.connect("chat_history.sqlite3").cursor()
+    c.execute("SELECT model, COUNT(*) FROM history GROUP BY model")
+    model_data = c.fetchall()
+    if model_data:
+        st.subheader("🧠 Uso por modelo LLM")
+        df_model = pd.DataFrame(model_data, columns=["Modelo", "Interações"])
+        st.bar_chart(df_model.set_index("Modelo"))
