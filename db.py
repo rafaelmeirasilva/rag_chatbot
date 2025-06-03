@@ -79,3 +79,32 @@ def get_all_tags():
         if row[0]:
             tag_set.update(tag.strip() for tag in row[0].split(","))
     return sorted(tag_set)
+
+def create_notes_table():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS document_notes (
+            file_name TEXT PRIMARY KEY,
+            note TEXT,
+            favorite INTEGER
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def save_document_note(file_name, note, favorite):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("REPLACE INTO document_notes (file_name, note, favorite) VALUES (?, ?, ?)",
+              (file_name, note, int(favorite)))
+    conn.commit()
+    conn.close()
+
+def get_document_note(file_name):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT note, favorite FROM document_notes WHERE file_name = ?", (file_name,))
+    row = c.fetchone()
+    conn.close()
+    return row if row else ("", 0)

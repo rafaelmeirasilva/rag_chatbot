@@ -3,7 +3,7 @@ import os
 import streamlit as st
 import shutil
 from decouple import config
-from db import create_history_table, create_tag_table, load_chat_history, save_chat_to_db, delete_all_history, get_tags_for_file, save_tags_for_file, get_all_tags
+from db import create_history_table, create_tag_table, load_chat_history, save_chat_to_db, delete_all_history, get_tags_for_file, save_tags_for_file, get_all_tags, create_notes_table, save_document_note, get_document_note
 from loader import process_documents, get_available_files, delete_files, UPLOAD_DIRECTORY
 from chat import initialize_chain, get_response, render_sources
 from ui import render_sidebar, render_chat_history
@@ -13,6 +13,7 @@ st.set_page_config(page_title="Chat com documentos (RAG)", page_icon="📄")
 os.environ["OPENAI_API_KEY"] = config("OPENAI_API_KEY")
 create_history_table()
 create_tag_table()
+create_notes_table()
 
 # Sidebar
 uploaded_files, selected_files, selected_model, selected_folder = render_sidebar()
@@ -68,6 +69,18 @@ elif page == "Dashboard":
     else:
         for file in filtered_files:
             with st.expander(f"📄 {file}"):
+                note, favorite = get_document_note(file)
+                
+                # Favorito
+                is_fav = st.checkbox("⭐ Marcar como favorito", value=bool(favorite), key=f"fav_{file}")
+
+                # Anotação
+                user_note = st.text_area("📝 Anotação para este documento", value=note, height=100, key=f"note_{file}")
+
+                if st.button("💾 Salvar anotação/favorito", key=f"save_note_{file}"):
+                    save_document_note(file, user_note, is_fav)
+                    st.success("Salvo com sucesso!")
+
                 st.markdown(f"**Nome:** `{file}`")
                 existing_tags = get_tags_for_file(file)
                 st.markdown(f"🏷️ **Classificação:** {', '.join(existing_tags) if existing_tags else 'Nenhuma'}")
