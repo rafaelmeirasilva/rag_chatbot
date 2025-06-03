@@ -1,7 +1,7 @@
 import os
 import streamlit as st
 from decouple import config
-from db import create_history_table, load_chat_history, save_chat_to_db, delete_all_history
+from db import create_history_table, create_tag_table, load_chat_history, save_chat_to_db, delete_all_history, get_tags_for_file, save_tags_for_file, get_all_tags
 from loader import process_documents, get_available_files, delete_files
 from chat import initialize_chain, get_response, render_sources
 from ui import render_sidebar, render_chat_history
@@ -10,6 +10,7 @@ from ui import render_sidebar, render_chat_history
 st.set_page_config(page_title="Chat com documentos (RAG)", page_icon="📄")
 os.environ["OPENAI_API_KEY"] = config("OPENAI_API_KEY")
 create_history_table()
+create_tag_table()
 
 # Sidebar
 uploaded_files, selected_files, selected_model = render_sidebar()
@@ -61,16 +62,29 @@ elif page == "Dashboard":
         for file in files:
             with st.expander(f"📄 {file}"):
                 st.markdown(f"**Nome:** `{file}`")
-                # Leitor de conteúdo (parcial - apenas texto bruto por enquanto)
+                existing_tags = get_tags_for_file(file)
+                st.markdown(f"🏷️ **Classificação:** {', '.join(existing_tags) if existing_tags else 'Nenhuma'}")
+
                 file_path = os.path.join("uploaded_files", file)
                 try:
                     with open(file_path, "r", encoding="utf-8") as f:
                         content = f.read()
                         st.text_area("Conteúdo do arquivo", content[:2000], height=300)
-                except Exception as e:
+                except:
                     st.warning("Não foi possível exibir o conteúdo (PDF ou binário).")
 
-                # Classificação manual (futura persistência em SQLite)
-                classification = st.text_input(f"Classificação para {file}", key=f"class_{file}")
+                all_tags = get_all_tags()
+                selected_tags = st.multiselect(
+                    f"Editar classificação (tags) para {file}",
+                    options=all_tags,
+                    default=existing_tags,
+                    key=f"tag_selector_{file}"
+                )
+                new_tag = st.text_input(f"Adicionar nova tag para {file}", key=f"new_tag_{file}")
+                if new_tag and new_tag not in selected_tags:
+                    selected_tags.append(new_tag)
+
                 if st.button(f"💾 Salvar classificação para {file}", key=f"save_{file}"):
-                    st.success(f"Classificação salva: {classification}")
+                    save_tags_for_file(file, selected_tags)
+                    st.success("Classificação salva com sucesso!")
+                    st.rerun()
