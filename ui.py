@@ -16,8 +16,9 @@ def render_sidebar():
                 selected_folder = new_folder
         uploaded_files = st.file_uploader("Faça o upload de arquivos", type=["pdf", "docx", "pptx", "csv", "txt"], accept_multiple_files=True)
         st.markdown("---")
-        files = get_available_files()
+        files = list(set(get_available_files()))  # Evita duplicações no menu
         selected_files = st.multiselect("📁 Escolha os arquivos para base do RAG:", files, default=files)
+
         if selected_files and st.button("❌ Apagar arquivos selecionados"):
             delete_files(selected_files)
             st.success("Arquivos apagados.")

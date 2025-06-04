@@ -1,13 +1,76 @@
+import base64
 import sqlite3
+import hashlib
+import pickle
 import os
 import pandas as pd
 import shutil
 import streamlit as st
+import datetime
+from pandas.tseries.offsets import BDay
 from decouple import config
-from db import create_history_table, create_tag_table, load_chat_history, save_chat_to_db, delete_all_history, get_tags_for_file, save_tags_for_file, get_all_tags, create_notes_table, save_document_note, get_document_note
-from loader import process_documents, get_available_files, delete_files, UPLOAD_DIRECTORY
+from db import create_history_table, create_lai_table, create_tag_table, load_chat_history, save_chat_to_db, delete_all_history, get_tags_for_file, save_tags_for_file, get_all_tags, create_notes_table, save_document_note, get_document_note
+from langchain_community.document_loaders import PyPDFLoader
+from loader import process_documents, get_available_files, load_file, delete_files, UPLOAD_DIRECTORY
 from chat import initialize_chain, get_response, render_sources
 from ui import render_sidebar, render_chat_history
+
+# Funções
+
+def resumir_documento(texto, max_chars=1000):
+    resumo = texto.strip().replace("\n", " ").replace("  ", " ")
+    return resumo[:max_chars] + "..." if len(resumo) > max_chars else resumo
+
+def get_cached_summary(file_path):
+    cache_file = f"{file_path}.summary.cache"
+    if os.path.exists(cache_file):
+        with open(cache_file, "rb") as f:
+            return pickle.load(f)
+    return None
+
+def save_summary_cache(file_path, summary):
+    cache_file = f"{file_path}.summary.cache"
+    with open(cache_file, "wb") as f:
+        pickle.dump(summary, f)
+
+def buscar_perguntas_relacionadas(tag, id_atual):
+    if not tag:
+        return []
+    conn = sqlite3.connect("chat_history.sqlite3")
+    c = conn.cursor()
+    c.execute("""
+        SELECT id, pergunta FROM perguntas_lai
+        WHERE tag = ? AND id != ?
+        ORDER BY data_envio DESC LIMIT 5
+    """, (tag, id_atual))
+    relacionadas = c.fetchall()
+    conn.close()
+    return relacionadas
+
+def buscar_documentos_por_tag(tag):
+    if not tag:
+        return []
+    conn = sqlite3.connect("chat_history.sqlite3")
+    c = conn.cursor()
+    c.execute("""
+        SELECT file_name FROM document_tags
+        WHERE tags LIKE ?
+    """, (f"%{tag}%",))
+    rows = c.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+def get_cached_ocr(file_path):
+    cache_path = f"{file_path}.ocr.cache"
+    if os.path.exists(cache_path):
+        with open(cache_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return None
+
+def save_cached_ocr(file_path, content):
+    cache_path = f"{file_path}.ocr.cache"
+    with open(cache_path, "w", encoding="utf-8") as f:
+        f.write(content)
 
 # Setup inicial
 st.set_page_config(page_title="Chat com documentos (RAG)", page_icon="📄")
@@ -15,12 +78,37 @@ os.environ["OPENAI_API_KEY"] = config("OPENAI_API_KEY")
 create_history_table()
 create_tag_table()
 create_notes_table()
+create_lai_table()
+
+if "page" not in st.session_state:
+    st.session_state.page = "Analytics"
 
 # Sidebar
 uploaded_files, selected_files, selected_model, selected_folder = render_sidebar()
 
+# ✅ Processa o upload de arquivos imediatamente ao serem enviados
+if uploaded_files:
+    process_documents(uploaded_files, selected_folder)
+    st.success("📁 Arquivo(s) enviado(s) com sucesso!")
+    st.rerun()
+
+if "page" in st.session_state:
+    page = st.session_state.page
+
 # Navegação
-page = st.sidebar.radio("📌 Navegação", ["Chat", "Dashboard", "Classificações", "Pastas", "Analytics"])
+pages = ["Chat", "Dashboard", "Classificações", "Pastas", "Analytics", "Busca", "Perguntas LAI", "Cadastro LAI"]
+
+page = st.sidebar.radio("📌 Navegação", pages, index=pages.index(st.session_state.page))
+
+# Corrige perda da navegação após upload
+if "_prev_page" in st.session_state:
+    st.session_state.page = st.session_state._prev_page
+    del st.session_state._prev_page
+    st.rerun()
+
+if st.sidebar.button("➕ Cadastrar nova pergunta LAI"):
+    st.session_state.page = "Cadastro LAI"
+    st.rerun()
 
 # Opção para ignorar o histórico apenas na próxima pergunta
 ignore_history = st.sidebar.checkbox("🔁 Ignorar histórico nesta pergunta", value=False)
@@ -28,7 +116,9 @@ ignore_history = st.sidebar.checkbox("🔁 Ignorar histórico nesta pergunta", v
 if page == "Chat":
     # Processamento de arquivos
     if uploaded_files:
+        st.session_state._prev_page = st.session_state.page  # Salva página ativa
         process_documents(uploaded_files, selected_folder)
+        st.success("📁 Arquivo(s) enviado(s) com sucesso!")
         st.rerun()
     
     st.title("🤖 Chat com documentos (RAG)")
@@ -87,12 +177,33 @@ elif page == "Dashboard":
                 st.markdown(f"🏷️ **Classificação:** {', '.join(existing_tags) if existing_tags else 'Nenhuma'}")
 
                 file_path = os.path.join("uploaded_files", file)
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                        st.text_area("Conteúdo do arquivo", content[:2000], height=300)
-                except:
-                    st.warning("Não foi possível exibir o conteúdo (PDF ou binário).")
+
+                import base64  # coloque no topo do app.py, se ainda não estiver
+
+                if file.endswith(".pdf"):
+                    # Botão de download
+                    with open(file_path, "rb") as f:
+                        st.download_button("📥 Baixar PDF original", data=f, file_name=os.path.basename(file_path))
+
+                    # Exibição do PDF diretamente na tela
+                    with open(file_path, "rb") as f:
+                        base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+                        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="500px" type="application/pdf"></iframe>'
+                        st.markdown(pdf_display, unsafe_allow_html=True)
+
+                    # Texto extraído via OCR
+                    cached_text = get_cached_ocr(file_path)
+                    if cached_text:
+                        st.text_area("📄 Conteúdo extraído do PDF (cache)", value=cached_text[:3000], height=300)
+                    else:
+                        try:
+                            loader = PyPDFLoader(file_path)
+                            docs = loader.load()
+                            full_text = "\n".join([doc.page_content for doc in docs])
+                            save_cached_ocr(file_path, full_text)
+                            st.text_area("📄 Conteúdo extraído do PDF", value=full_text[:3000], height=300)
+                        except Exception as e:
+                            st.warning(f"Não foi possível extrair texto do PDF: {e}")
 
                 all_tags = get_all_tags()
                 selected_tags = st.multiselect(
@@ -238,3 +349,252 @@ elif page == "Analytics":
         st.subheader("🧠 Uso por modelo LLM")
         df_model = pd.DataFrame(model_data, columns=["Modelo", "Interações"])
         st.bar_chart(df_model.set_index("Modelo"))
+
+elif page == "Busca":
+    st.title("🔍 Busca textual em documentos")
+
+    query = st.text_input("Digite um termo para buscar")
+    if query:
+        files = get_available_files()
+        resultados = []
+
+        for file in files:
+            path = os.path.join("uploaded_files", file)
+            try:
+                docs = load_file(path)
+                if docs:
+                    full_text = "\n".join([doc.page_content for doc in docs])
+                    if query.lower() in full_text.lower():
+                        trechos = [linha.strip() for linha in full_text.split("\n") if query.lower() in linha.lower()]
+                        resultados.append((file, trechos[:3]))  # mostra até 3 trechos
+            except Exception as e:
+                st.warning(f"Erro ao processar {file}: {str(e)}")
+
+        if not resultados:
+            st.warning("Nenhum resultado encontrado.")
+        else:
+            st.success(f"{len(resultados)} documento(s) encontrados.")
+            for file, trechos in resultados:
+                file_path = os.path.join("uploaded_files", file)
+                cached_summary = get_cached_summary(file_path)
+                if not cached_summary:
+                    joined_text = "\n".join([t for t in trechos])
+                    resumo = resumir_documento(joined_text)
+                    save_summary_cache(file_path, resumo)
+                else:
+                    resumo = cached_summary
+
+                with st.expander(f"📄 {file}"):
+                    st.markdown("🔹 **Resumo do documento:**")
+                    st.markdown(f"> {resumo}")
+                    st.markdown("🔍 **Trechos encontrados:**")
+                    for trecho in trechos:
+                        st.markdown(f"- {trecho}")
+
+elif page == "LAI":
+    st.title("📄 Cadastro de Perguntas - Lei de Acesso à Informação")
+
+    with st.form("form_lai"):
+        pergunta = st.text_area("📝 Texto da pergunta", height=100)
+        data_envio = st.date_input("📆 Data de envio da pergunta", value=datetime.date.today())
+        data_limite = (pd.to_datetime(data_envio) + BDay(20)).date()
+
+        st.markdown(f"⏱️ **Data limite para resposta (20 dias úteis):** `{data_limite}`")
+
+        origem = st.text_input("🌐 Origem da pergunta")
+        destinatario = st.text_input("🏛️ Unidade destinatária")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            orgao_recursal_1 = st.text_input("📤 1º órgão recursal")
+            site_orgao_recursal_1 = st.text_input("🔗 Site 1º órgão")
+        texto_recurso_1 = st.text_area("🗣️ Texto do 1º recurso")
+
+        col3, col4 = st.columns(2)
+        with col3:
+            orgao_recursal_2 = st.text_input("📤 2º órgão recursal")
+            site_orgao_recursal_2 = st.text_input("🔗 Site 2º órgão")
+        texto_recurso_2 = st.text_area("🗣️ Texto do 2º recurso")
+
+        tag = st.text_input("🏷️ Tag (para vincular documentos e perguntas semelhantes)")
+        transparencia_ativa = st.checkbox("🔍 Informação disponível por transparência ativa?")
+        
+        # Só aparece se usuário for superuser (placeholder por enquanto: visível a todos)
+        observacao_privada = st.text_area("🔒 Observação privada (visível só ao superuser)")
+
+        submitted = st.form_submit_button("💾 Salvar pergunta")
+        if submitted:
+            conn = sqlite3.connect("chat_history.sqlite3")
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO perguntas_lai (
+                    pergunta, data_envio, data_limite_resposta,
+                    origem, destinatario,
+                    orgao_recursal_1, site_orgao_recursal_1, texto_recurso_1,
+                    orgao_recursal_2, site_orgao_recursal_2, texto_recurso_2,
+                    tag, transparencia_ativa, observacao_privada
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                pergunta, str(data_envio), str(data_limite),
+                origem, destinatario,
+                orgao_recursal_1, site_orgao_recursal_1, texto_recurso_1,
+                orgao_recursal_2, site_orgao_recursal_2, texto_recurso_2,
+                tag, int(transparencia_ativa), observacao_privada
+            ))
+            conn.commit()
+            conn.close()
+            st.success("Pergunta cadastrada com sucesso!")
+
+
+elif page == "Cadastro LAI":
+    st.title("📝 Cadastro de nova pergunta (LAI)")
+
+    with st.form("form_lai"):
+        pergunta = st.text_area("📝 Texto da pergunta", height=100)
+        data_envio = st.date_input("📆 Data de envio da pergunta", value=datetime.date.today())
+        data_limite = (pd.to_datetime(data_envio) + pd.offsets.BDay(20)).date()
+
+        st.markdown(f"⏱️ **Data limite para resposta (20 dias úteis):** `{data_limite}`")
+
+        origem = st.text_input("🌐 Origem da pergunta")
+        destinatario = st.text_input("🏛️ Unidade destinatária")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            orgao_recursal_1 = st.text_input("📤 1º órgão recursal")
+            site_orgao_recursal_1 = st.text_input("🔗 Site 1º órgão")
+        texto_recurso_1 = st.text_area("🗣️ Texto do 1º recurso")
+
+        col3, col4 = st.columns(2)
+        with col3:
+            orgao_recursal_2 = st.text_input("📤 2º órgão recursal")
+            site_orgao_recursal_2 = st.text_input("🔗 Site 2º órgão")
+        texto_recurso_2 = st.text_area("🗣️ Texto do 2º recurso")
+
+        tag = st.text_input("🏷️ Tag (para vincular documentos e perguntas semelhantes)")
+        transparencia_ativa = st.checkbox("🔍 Informação disponível por transparência ativa?")
+        
+        observacao_privada = st.text_area("🔒 Observação privada (visível só ao superuser)")
+
+        submitted = st.form_submit_button("💾 Salvar pergunta")
+        if submitted:
+            conn = sqlite3.connect("chat_history.sqlite3")
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO perguntas_lai (
+                    pergunta, data_envio, data_limite_resposta,
+                    origem, destinatario,
+                    orgao_recursal_1, site_orgao_recursal_1, texto_recurso_1,
+                    orgao_recursal_2, site_orgao_recursal_2, texto_recurso_2,
+                    tag, transparencia_ativa, observacao_privada
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                pergunta, str(data_envio), str(data_limite),
+                origem, destinatario,
+                orgao_recursal_1, site_orgao_recursal_1, texto_recurso_1,
+                orgao_recursal_2, site_orgao_recursal_2, texto_recurso_2,
+                tag, int(transparencia_ativa), observacao_privada
+            ))
+            conn.commit()
+            conn.close()
+            st.success("Pergunta cadastrada com sucesso!")
+            st.session_state.page = "Perguntas LAI"
+            st.rerun()
+
+elif page == "Perguntas LAI":
+    st.title("📄 Perguntas cadastradas (LAI)")
+
+    conn = sqlite3.connect("chat_history.sqlite3")
+    c = conn.cursor()
+
+    # Captura filtros únicos
+    c.execute("SELECT DISTINCT tag FROM perguntas_lai WHERE tag IS NOT NULL")
+    tags = [row[0] for row in c.fetchall() if row[0]]
+
+    c.execute("SELECT DISTINCT destinatario FROM perguntas_lai WHERE destinatario IS NOT NULL")
+    orgaos = [row[0] for row in c.fetchall() if row[0]]
+
+    # Filtros
+    col1, col2 = st.columns(2)
+    with col1:
+        filtro_tag = st.selectbox("🏷️ Filtrar por Tag", ["Todos"] + tags)
+    with col2:
+        filtro_destinatario = st.selectbox("🏛️ Filtrar por Unidade", ["Todos"] + orgaos)
+
+    # Botão para novo cadastro
+    if st.button("➕ Cadastrar nova pergunta"):
+        st.session_state.page = "Cadastro LAI"
+        st.rerun()
+
+    # Construção da query com filtros
+    query_base = "FROM perguntas_lai WHERE 1=1"
+    params = []
+
+    if filtro_tag != "Todos":
+        query_base += " AND tag = ?"
+        params.append(filtro_tag)
+
+    if filtro_destinatario != "Todos":
+        query_base += " AND destinatario = ?"
+        params.append(filtro_destinatario)
+
+    por_pagina = 20
+    c.execute(f"SELECT COUNT(*) {query_base}", params)
+    total = c.fetchone()[0]
+    total_paginas = max((total - 1) // por_pagina + 1, 1)
+    pagina = st.number_input("Página", 1, total_paginas, 1)
+    offset = (pagina - 1) * por_pagina
+
+    c.execute(f"""
+        SELECT id, pergunta, data_envio, data_limite_resposta, destinatario, tag, observacao_privada
+        {query_base}
+        ORDER BY data_envio DESC
+        LIMIT ? OFFSET ?
+    """, params + [por_pagina, offset])
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        st.info("Nenhuma pergunta cadastrada.")
+    else:
+        for id_, pergunta, data_envio, data_limite, destinatario, tag, obs_privada in rows:
+            with st.expander(f"📌 Pergunta #{id_} - {data_envio}"):
+                nova_pergunta = st.text_area("📝 Pergunta", value=pergunta, key=f"edit_pergunta_{id_}")
+                nova_tag = st.text_input("🏷️ Tag", value=tag or "", key=f"edit_tag_{id_}")
+                nova_obs = st.text_area("🔒 Observação privada", value=obs_privada or "", key=f"edit_obs_{id_}")
+
+                st.markdown(f"**Unidade destinatária:** `{destinatario}`")
+                st.markdown(f"**Prazo para resposta:** `{data_limite}`")
+                relacionadas = buscar_perguntas_relacionadas(tag, id_)
+                if relacionadas:
+                    st.markdown("🔗 **Perguntas relacionadas:**")
+                    for rid, texto in relacionadas:
+                        resumo = texto.strip().replace("\n", " ")
+                        st.markdown(f"- #{rid}: {resumo[:100]}{'...' if len(resumo) > 100 else ''}")
+                    docs_relacionados = buscar_documentos_por_tag(tag)
+                    st.markdown("📎 **Documentos relacionados:**")
+                    for doc in docs_relacionados:
+                        st.markdown(f"**📄 {doc}**")
+                        path = os.path.join("uploaded_files", doc)
+                        try:
+                            with open(path, "r", encoding="utf-8") as f:
+                                conteudo = f.read()
+                                st.text_area("Conteúdo", conteudo[:2000], height=200, key=f"txt_{doc}")
+                        except:
+                            st.caption("❌ Não foi possível exibir o conteúdo.")
+
+
+
+                if st.button("💾 Salvar alterações", key=f"salvar_{id_}"):
+                    conn2 = sqlite3.connect("chat_history.sqlite3")
+                    c2 = conn2.cursor()
+                    c2.execute("""
+                        UPDATE perguntas_lai
+                        SET pergunta = ?, tag = ?, observacao_privada = ?
+                        WHERE id = ?
+                    """, (nova_pergunta, nova_tag, nova_obs, id_))
+                    conn2.commit()
+                    conn2.close()
+                    st.success("Alterações salvas!")
+                    st.rerun()
+

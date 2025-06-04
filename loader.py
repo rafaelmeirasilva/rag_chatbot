@@ -49,13 +49,17 @@ def delete_files(files):
             os.remove(path)
 
 def get_available_files():
+    seen = set()
     files = []
     for root, _, filenames in os.walk(UPLOAD_DIRECTORY):
         for filename in filenames:
-            rel_path = os.path.relpath(os.path.join(root, filename), UPLOAD_DIRECTORY)
-            files.append(rel_path.replace("\\", "/"))  # Windows fix
+            if filename.endswith(".cache"):
+                continue  # Ignora arquivos de cache (resumo e OCR)
+            rel_path = os.path.relpath(os.path.join(root, filename), UPLOAD_DIRECTORY).replace("\\", "/")
+            if rel_path not in seen:
+                seen.add(rel_path)
+                files.append(rel_path)
     return files
-
 
 def get_vectorstore(selected_files):
     all_chunks = []

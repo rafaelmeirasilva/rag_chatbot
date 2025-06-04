@@ -108,3 +108,28 @@ def get_document_note(file_name):
     row = c.fetchone()
     conn.close()
     return row if row else ("", 0)
+
+def create_lai_table():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS perguntas_lai (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pergunta TEXT,
+            data_envio TEXT,
+            data_limite_resposta TEXT,
+            origem TEXT,
+            destinatario TEXT,
+            orgao_recursal_1 TEXT,
+            site_orgao_recursal_1 TEXT,
+            texto_recurso_1 TEXT,
+            orgao_recursal_2 TEXT,
+            site_orgao_recursal_2 TEXT,
+            texto_recurso_2 TEXT,
+            tag TEXT,
+            transparencia_ativa INTEGER,
+            observacao_privada TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
