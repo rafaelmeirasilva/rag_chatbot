@@ -2,17 +2,21 @@ import base64
 import sqlite3
 import hashlib
 import pickle
+import pytesseract
 import os
 import pandas as pd
 import shutil
 import streamlit as st
 import datetime
+import pytesseract
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 from pandas.tseries.offsets import BDay
 from decouple import config
 from db import create_history_table, create_lai_table, create_tag_table, load_chat_history, save_chat_to_db, delete_all_history, get_tags_for_file, save_tags_for_file, get_all_tags, create_notes_table, save_document_note, get_document_note
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader, TextLoader, UnstructuredWordDocumentLoader
 from loader import process_documents, get_available_files, load_file, delete_files, UPLOAD_DIRECTORY
 from chat import initialize_chain, get_response, render_sources
+from pdf2image import convert_from_path
 from ui import render_sidebar, render_chat_history
 
 # Funções
@@ -71,6 +75,31 @@ def save_cached_ocr(file_path, content):
     cache_path = f"{file_path}.ocr.cache"
     with open(cache_path, "w", encoding="utf-8") as f:
         f.write(content)
+
+from pdf2image import convert_from_path
+import pytesseract
+
+def extract_text_from_image_pdf(file_path, max_pages=3):
+    try:
+        images = convert_from_path(
+            file_path,
+            dpi=200,
+            first_page=1,
+            last_page=max_pages,
+            poppler_path=r"C:\Program Files\poppler-24.08.0\Library\bin"
+        )
+        extracted_text = ""
+        progress = st.progress(0, text="🔍 Executando OCR nas páginas do PDF...")
+
+        for i, img in enumerate(images):
+            text = pytesseract.image_to_string(img, lang="por")
+            extracted_text += text + "\n\n"
+            progress.progress((i + 1) / len(images))
+        progress.empty()  # limpa a barra ao final
+        return extracted_text.strip()
+    except Exception as e:
+        return f"[Erro no OCR de imagem] {str(e)}"
+
 
 # Setup inicial
 st.set_page_config(page_title="Chat com documentos (RAG)", page_icon="📄")
@@ -180,30 +209,52 @@ elif page == "Dashboard":
 
                 import base64  # coloque no topo do app.py, se ainda não estiver
 
-                if file.endswith(".pdf"):
-                    # Botão de download
-                    with open(file_path, "rb") as f:
-                        st.download_button("📥 Baixar PDF original", data=f, file_name=os.path.basename(file_path))
+                # Botão de download
+                with open(file_path, "rb") as f:
+                    st.download_button(f"📥 Baixar {os.path.basename(file_path)}", data=f, file_name=os.path.basename(file_path))
 
-                    # Exibição do PDF diretamente na tela
+                # Se for PDF, tenta exibir como iframe
+                if file.endswith(".pdf"):
                     with open(file_path, "rb") as f:
                         base64_pdf = base64.b64encode(f.read()).decode('utf-8')
                         pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="500px" type="application/pdf"></iframe>'
                         st.markdown(pdf_display, unsafe_allow_html=True)
 
-                    # Texto extraído via OCR
-                    cached_text = get_cached_ocr(file_path)
-                    if cached_text:
-                        st.text_area("📄 Conteúdo extraído do PDF (cache)", value=cached_text[:3000], height=300)
-                    else:
-                        try:
+                # Tentativa de leitura e cache
+                cached_text = get_cached_ocr(file_path)
+                if cached_text and not cached_text.startswith("[Erro no OCR"):
+                    st.text_area("📄 Conteúdo extraído do cache", value=cached_text[:3000], height=300)
+                else:
+                    try:
+                        if file.endswith(".pdf"):
                             loader = PyPDFLoader(file_path)
+                        elif file.endswith(".txt"):
+                            loader = TextLoader(file_path, encoding="utf-8")
+                        elif file.endswith(".docx"):
+                            loader = UnstructuredWordDocumentLoader(file_path)
+                        else:
+                            loader = None
+
+                        if loader:
                             docs = loader.load()
                             full_text = "\n".join([doc.page_content for doc in docs])
-                            save_cached_ocr(file_path, full_text)
-                            st.text_area("📄 Conteúdo extraído do PDF", value=full_text[:3000], height=300)
-                        except Exception as e:
-                            st.warning(f"Não foi possível extrair texto do PDF: {e}")
+                        else:
+                            full_text = ""
+                    except Exception as e:
+                        st.warning(f"Erro ao extrair texto: {e}")
+                        full_text = ""
+
+                    if not full_text.strip() and file.endswith(".pdf"):
+                        with st.spinner("🧠 Extraindo texto com OCR (aguarde alguns segundos)..."):
+                            full_text = extract_text_from_image_pdf(file_path)
+
+                    if full_text.strip():
+                        save_cached_ocr(file_path, full_text)
+                        st.text_area("📄 Conteúdo extraído do arquivo", value=full_text[:3000], height=300)
+                    else:
+                        st.warning("❌ Nenhum conteúdo textual foi encontrado neste arquivo.")
+
+
 
                 all_tags = get_all_tags()
                 selected_tags = st.multiselect(
